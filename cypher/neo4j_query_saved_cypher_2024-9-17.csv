@@ -44,3 +44,45 @@ MERGE (ranking)-[to:TO]->(car)
   ON CREATE SET to.score = toInteger(row[keyRow])
   ON MATCH SET to.score = toInteger(row[keyRow])
 RETURN count(to);",9,4,false
+Graph Data Science,,,10,0,true
+Enrich with vectors,,,11,0,true
+Graph projection,,"MATCH (source:Jury)-[:GIVES]->(:Ranking)-[to:TO]->(target:Car)
+RETURN gds.graph.project(
+  'rankingGraph',
+  source,
+  target,
+  { relationshipProperties: to { score: to.score } }
+);",12,10,false
+Compute vote similarity,,"CALL gds.nodeSimilarity.write('rankingGraph', {
+    writeRelationshipType: 'SIMILAR_VOTE',
+    writeProperty: 'simScore',
+    relationshipWeightProperty: 'score', similarityCutoff: 0.7
+})
+YIELD nodesCompared, relationshipsWritten",13,10,false
+Mutate mode,,"CALL gds.nodeSimilarity.mutate('rankingGraph', {
+    mutateRelationshipType: 'SIMILAR_VOTE',
+    mutateProperty: 'simScore',
+    relationshipWeightProperty: 'score', similarityCutoff: 0.7
+})
+YIELD nodesCompared, relationshipsWritten",14,10,false
+"Similar Jury graph projection ",,"CALL gds.graph.project(
+  'communityGraph',
+  ['Jury'],
+  {
+    SIMILAR_VOTE: { properties: ""simScore"" }
+  }
+)
+YIELD
+  graphName AS graph,
+  relationshipProjection AS readProjection,
+  nodeCount AS nodes,
+  relationshipCount AS rels",15,10,false
+Louvain community detection,,"CALL gds.louvain.write(
+  'communityGraph', 
+  { 
+    nodeLabels: ['Jury'],
+    relationshipTypes: ['SIMILAR_VOTE'],
+    relationshipWeightProperty: 'simScore',
+    writeProperty: 'community' 
+})
+YIELD communityCount, modularity, modularities",16,10,false
