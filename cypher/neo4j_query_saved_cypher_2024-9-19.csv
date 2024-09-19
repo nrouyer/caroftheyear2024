@@ -1,0 +1,106 @@
+name,description,query,id,parentId,isFolder
+salonauto,,,0,,true
+Discover data,,"LOAD CSV WITH HEADERS FROM ""https://raw.githubusercontent.com/nrouyer/caroftheyear2024/main/dataset/table_caroftheyear_links_votedetails.csv"" AS row
+RETURN row LIMIT 10",1,0,false
+Nominated cars,,"LOAD CSV WITH HEADERS FROM ""https://raw.githubusercontent.com/nrouyer/caroftheyear2024/main/dataset/table_caroftheyear_links_votedetails.csv"" AS row
+UNWIND keys(row) AS keyRow
+with keyRow where not keyRow IN [""Name"", ""Link"", ""VoteDetails"", ""Country""]
+WITH DISTINCT keyRow
+RETURN keyRow AS car",2,0,false
+Constraints,,"CREATE CONSTRAINT jury_name IF NOT EXISTS FOR (jury:Jury) REQUIRE (jury.name) IS NODE KEY;
+CREATE CONSTRAINT ranking_link IF NOT EXISTS FOR (ranking:Ranking) REQUIRE (ranking.link) IS NODE KEY;
+CREATE CONSTRAINT car_name IF NOT EXISTS FOR (car:Car) REQUIRE (car.name) IS NODE KEY;",3,0,false
+Load data,,,4,0,true
+Load Jury nodes,,"LOAD CSV WITH HEADERS FROM ""https://raw.githubusercontent.com/nrouyer/caroftheyear2024/main/dataset/table_caroftheyear_links_votedetails.csv"" AS row
+MERGE (jury:Jury {name: row.Name})
+RETURN count (jury);",5,4,false
+Load Car nodes,,"LOAD CSV WITH HEADERS FROM ""https://raw.githubusercontent.com/nrouyer/caroftheyear2024/main/dataset/table_caroftheyear_links_votedetails.csv"" AS row
+UNWIND keys(row) AS keyRow
+with distinct keyRow where not keyRow IN [""Name"", ""Link"", ""VoteDetails"", ""Country""]
+MERGE (car:Car {name: keyRow})
+RETURN count(car);",6,4,false
+Load Ranking nodes,,"LOAD CSV WITH HEADERS FROM ""https://raw.githubusercontent.com/nrouyer/caroftheyear2024/main/dataset/table_caroftheyear_links_votedetails.csv"" AS row
+WITH row WHERE row.Link is not null
+MERGE (ranking:Ranking {link: row.Link}) 
+  ON CREATE SET ranking.voteDetails = row.VoteDetails
+  ON MATCH SET ranking.voteDetails = row.VoteDetails
+RETURN count(ranking);",7,4,false
+Relationships Jury GIVES Ranking,,"LOAD CSV WITH HEADERS FROM ""https://raw.githubusercontent.com/nrouyer/caroftheyear2024/main/dataset/table_caroftheyear_links_votedetails.csv"" AS row
+WITH row WHERE row.Link is not null
+MATCH (ranking:Ranking {link: row.Link}) 
+MATCH (jury:Jury {name: row.Name})
+MERGE (jury)-[gives:GIVES]->(ranking)
+RETURN count(gives);",8,4,false
+Relationships Ranking TO Car,,"MATCH (car:Car)
+WITH collect (car.name) AS listOfCars
+LOAD CSV WITH HEADERS FROM ""https://raw.githubusercontent.com/nrouyer/caroftheyear2024/main/dataset/table_caroftheyear_links_votedetails.csv"" AS row
+WITH listOfCars, row WHERE row.Link is not null 
+MATCH (ranking:Ranking {link: row.Link}) 
+WITH listOfCars, ranking, row
+UNWIND keys(row) AS keyRow
+WITH listOfCars, ranking, row, keyRow WHERE keyRow in listOfCars
+MATCH (car:Car {name: keyRow})
+MERGE (ranking)-[to:TO]->(car)
+  ON CREATE SET to.score = toInteger(row[keyRow])
+  ON MATCH SET to.score = toInteger(row[keyRow])
+RETURN count(to);",9,4,false
+Graph Data Science,,,10,0,true
+Enrich with vectors,,,11,0,true
+Graph projection,,"MATCH (source:Jury)-[:GIVES]->(:Ranking)-[to:TO]->(target:Car)
+RETURN gds.graph.project(
+  'rankingGraph',
+  source,
+  target,
+  { relationshipProperties: to { score: to.score } }
+);",12,10,false
+Compute vote similarity,,"CALL gds.nodeSimilarity.write('rankingGraph', {
+    writeRelationshipType: 'SIMILAR_VOTE',
+    writeProperty: 'simScore',
+    relationshipWeightProperty: 'score', similarityCutoff: 0.7
+})
+YIELD nodesCompared, relationshipsWritten",13,10,false
+Mutate mode,,"CALL gds.nodeSimilarity.mutate('rankingGraph', {
+    mutateRelationshipType: 'SIMILAR_VOTE',
+    mutateProperty: 'simScore',
+    relationshipWeightProperty: 'score', similarityCutoff: 0.7
+})
+YIELD nodesCompared, relationshipsWritten",14,10,false
+"Similar Jury graph projection ",,"CALL gds.graph.project(
+  'communityGraph',
+  ['Jury'],
+  {
+    SIMILAR_VOTE: { properties: ""simScore"" }
+  }
+)
+YIELD
+  graphName AS graph,
+  relationshipProjection AS readProjection,
+  nodeCount AS nodes,
+  relationshipCount AS rels",15,10,false
+Louvain community detection,,"CALL gds.louvain.write(
+  'communityGraph', 
+  { 
+    nodeLabels: ['Jury'],
+    relationshipTypes: ['SIMILAR_VOTE'],
+    relationshipWeightProperty: 'simScore',
+    writeProperty: 'community' 
+})
+YIELD communityCount, modularity, modularities",16,10,false
+Setup your OpenAI token,,":param {token: ""your_openAI_token""}",17,11,false
+Compute 1 vector for 1 Ranking node,,"MATCH (r:Ranking) 
+WITH r ORDER by rand() LIMIT 1
+WITH r, genai.vector.encode(r.voteDetails, 'OpenAI', { token: $token }) AS propertyVector
+CALL db.create.setNodeVectorProperty(r, 'embedding', propertyVector)
+RETURN r.voteDetails AS voteDetails, r.embedding AS embedding",18,11,false
+Compute vectors for all Ranking,,"MATCH (r:Ranking) 
+CALL (r) {
+  WITH r, genai.vector.encode(r.voteDetails, 'OpenAI', { token: $token }) AS propertyVector
+  CALL db.create.setNodeVectorProperty(r, 'embedding', propertyVector)
+} IN TRANSACTIONS OF 10 rows",19,11,false
+Create vector index on embedding,,"CREATE VECTOR INDEX rankingEmbedding IF NOT EXISTS
+FOR (r:Ranking)
+ON r.embedding
+OPTIONS { indexConfig: {
+ `vector.dimensions`: 1536,
+ `vector.similarity_function`: 'cosine'
+}}",20,11,false
